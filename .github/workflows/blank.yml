@@ -1,4 +1,4 @@
-name: Deploy 3x UI Panel
+name: 3X-UI Panel Deploy
 
 on:
   push:
@@ -6,197 +6,83 @@ on:
   workflow_dispatch:
 
 jobs:
-  deploy-panels:
+  deploy-3x-ui:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 360  # 6 hours max
+
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Docker
-        uses: docker/setup-buildx-action@v3
-
-      - name: Install Docker Compose
+      - name: Install 3X-UI Panel
         run: |
-          sudo curl -L "https://github.com/docker/compose/releases/download/v2.24.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-          sudo chmod +x /usr/local/bin/docker-compose
-          docker-compose --version
+          # Run as root (sudo)
+          sudo bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh) << 'INSTALL'
+          n
+          INSTALL
+        shell: bash
 
-      - name: Create Docker Compose file
+      - name: Configure 3X-UI Settings
         run: |
-          cat > docker-compose.yml << 'EOF'
-          version: '3.8'
+          # Set username, password, and port
+          sudo /usr/local/x-ui/x-ui setting -username "nomin" -password "2010" -port "2026"
+          
+          # Generate random web base path
+          webBasePath=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 18)
+          sudo /usr/local/x-ui/x-ui setting -webBasePath "$webBasePath"
+          
+          # Restart service
+          sudo systemctl restart x-ui
+          
+          # Save settings for later steps
+          echo "WEB_BASE_PATH=$webBasePath" >> $GITHUB_ENV
+          echo "PANEL_PORT=2026" >> $GITHUB_ENV
 
-          services:
-            # Panel 1: Heimdall Dashboard
-            panel1:
-              image: linuxserver/heimdall:latest
-              container_name: ui_panel_1
-              restart: unless-stopped
-              ports:
-                - "2026:80"
-              volumes:
-                - panel1_data:/config
-              environment:
-                - PUID=1000
-                - PGID=1000
-                - TZ=UTC
-              networks:
-                - panel_network
-
-            # Panel 2: File Browser
-            panel2:
-              image: filebrowser/filebrowser:latest
-              container_name: ui_panel_2
-              restart: unless-stopped
-              ports:
-                - "2027:80"
-              volumes:
-                - /:/srv
-                - panel2_data:/database
-              environment:
-                - FB_USERNAME=nomin
-                - FB_PASSWORD=2010
-              networks:
-                - panel_network
-
-            # Panel 3: System Monitor
-            panel3:
-              image: netdata/netdata:latest
-              container_name: ui_panel_3
-              restart: unless-stopped
-              ports:
-                - "2028:19999"
-              volumes:
-                - panel3_config:/etc/netdata
-                - panel3_lib:/var/lib/netdata
-                - /proc:/host/proc:ro
-                - /sys:/host/sys:ro
-                - /var/run/docker.sock:/var/run/docker.sock:ro
-              networks:
-                - panel_network
-
-            # Nginx Reverse Proxy with Auth
-            nginx:
-              image: nginx:alpine
-              container_name: panel_proxy
-              restart: unless-stopped
-              ports:
-                - "80:80"
-              volumes:
-                - ./nginx.conf:/etc/nginx/nginx.conf:ro
-                - ./htpasswd:/etc/nginx/htpasswd:ro
-              depends_on:
-                - panel1
-                - panel2
-                - panel3
-              networks:
-                - panel_network
-
-          networks:
-            panel_network:
-              driver: bridge
-
-          volumes:
-            panel1_data:
-            panel2_data:
-            panel3_config:
-            panel3_lib:
-          EOF
-
-      - name: Create Nginx config
+      - name: Get Server IP and Show Panel URL
         run: |
-          cat > nginx.conf << 'EOF'
-          events {
-            worker_connections 1024;
-          }
-
-          http {
-            upstream panel1 {
-              server panel1:80;
-            }
-            upstream panel2 {
-              server panel2:80;
-            }
-            upstream panel3 {
-              server panel3:19999;
-            }
-
-            server {
-              listen 80;
-              server_name localhost;
-
-              # Basic Authentication
-              auth_basic "Restricted Access";
-              auth_basic_user_file /etc/nginx/htpasswd;
-
-              location /panel1 {
-                proxy_pass http://panel1/;
-                proxy_set_header Host $host;
-                proxy_set_header X-Real-IP $remote_addr;
-              }
-
-              location /panel2 {
-                proxy_pass http://panel2/;
-                proxy_set_header Host $host;
-                proxy_set_header X-Real-IP $remote_addr;
-              }
-
-              location /panel3 {
-                proxy_pass http://panel3/;
-                proxy_set_header Host $host;
-                proxy_set_header X-Real-IP $remote_addr;
-              }
-
-              location / {
-                return 302 /panel1;
-              }
-            }
-          }
-          EOF
-
-      - name: Create htpasswd file
-        run: |
-          sudo apt-get update && sudo apt-get install -y apache2-utils
-          htpasswd -cb htpasswd nomin 2010
-
-      - name: Start containers
-        run: |
-          docker-compose up -d
-          sleep 10
-
-      - name: Check running containers
-        run: |
-          docker ps
-          docker-compose logs
-
-      - name: Get Panel URLs
-        run: |
-          echo "=========================================="
-          echo "🚀 PANEL ACCESS URLS"
-          echo "=========================================="
+          # Get public IP
+          SERVER_IP=$(curl -s https://api4.ipify.org || curl -s https://ipv4.icanhazip.com || curl -s https://v4.ident.me)
+          echo "SERVER_IP=$SERVER_IP" >> $GITHUB_ENV
+          
           echo ""
-          echo "Username: nomin"
-          echo "Password: 2010"
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║           🚀 3X-UI PANEL ACCESS INFORMATION                 ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  Username:     nomin                                         ║"
+          echo "║  Password:     2010                                          ║"
+          echo "║  Port:         2026                                           ║"
+          echo "║  WebBasePath:  ${{ env.WEB_BASE_PATH }}"                      ║"
+          echo "║                                                               ║"
+          echo "║  🔗 PANEL URL: http://${SERVER_IP}:2026/${{ env.WEB_BASE_PATH }}  ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  ⏰ Panel will run for 6 hours then auto-stop                ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
           echo ""
-          echo "Panel 1 (Dashboard): http://localhost:2026"
-          echo "Panel 2 (File Browser): http://localhost:2027"
-          echo "Panel 3 (System Monitor): http://localhost:2028"
+
+      - name: Keep Panel Running for 6 Hours
+        run: |
+          echo "⏳ Panel is running... Will auto-stop after 6 hours"
+          echo "Access URL: http://${{ env.SERVER_IP }}:2026/${{ env.WEB_BASE_PATH }}"
           echo ""
-          echo "Combined Proxy (with auth): http://localhost"
-          echo "  - /panel1 - Dashboard"
-          echo "  - /panel2 - File Browser"
-          echo "  - /panel3 - System Monitor"
-          echo "=========================================="
+          
+          # Run for 6 hours (21600 seconds)
+          for i in $(seq 1 360); do
+            sleep 60
+            echo "[$i/360 minutes elapsed] Panel still running at http://${{ env.SERVER_IP }}:2026/${{ env.WEB_BASE_PATH }}"
+            
+            # Check if panel is still alive
+            if ! curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:2026/${{ env.WEB_BASE_PATH }} | grep -q "200\|307"; then
+              echo "⚠️ Panel seems down, restarting..."
+              sudo systemctl restart x-ui
+            fi
+          done
+          
+          echo "✅ 6 hours completed. Stopping panel..."
 
-      - name: Test Panel 1
+      - name: Stop Panel After 6 Hours
+        if: always()
         run: |
-          curl -I http://localhost:2026 || echo "Panel 1 not responding yet"
-
-      - name: Test Panel 2
-        run: |
-          curl -I http://localhost:2027 || echo "Panel 2 not responding yet"
-
-      - name: Test Panel 3
-        run: |
-          curl -I http://localhost:2028 || echo "Panel 3 not responding yet"
+          echo "🛑 Stopping 3X-UI Panel..."
+          sudo systemctl stop x-ui || true
+          sudo systemctl disable x-ui || true
+          echo "✅ Panel stopped successfully"
