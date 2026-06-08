@@ -1,4 +1,4 @@
-name: 3X-UI Panel Deploy on VPS
+name: 3X-UI Panel Deploy
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 jobs:
   deploy-3x-ui:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours max
+    timeout-minutes: 360
 
     steps:
       - name: Checkout repository
@@ -16,11 +16,8 @@ jobs:
 
       - name: Install 3X-UI Panel
         run: |
-          # Download install script first
           curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh -o /tmp/install.sh
           chmod +x /tmp/install.sh
-          
-          # Run install script with sudo (non-interactive)
           sudo bash /tmp/install.sh << 'EOF'
           n
           EOF
@@ -37,14 +34,47 @@ jobs:
           
           # Restart service
           sudo systemctl restart x-ui
-          sleep 3
+          sleep 5
           
           # Verify panel is running
-          sudo systemctl status x-ui --no-pager
+          sudo systemctl status x-ui --no-pager || true
           
-          # Save settings for later steps
+          # Save settings
           echo "WEB_BASE_PATH=$webBasePath" >> $GITHUB_ENV
           echo "PANEL_PORT=2026" >> $GITHUB_ENV
+
+      - name: Configure Firewall and Port Forwarding
+        run: |
+          echo "=== Configuring Firewall ==="
+          
+          # Check if ufw exists
+          if command -v ufw &> /dev/null; then
+            echo "UFW found, configuring..."
+            sudo ufw allow 2026/tcp || true
+            sudo ufw allow 22/tcp || true
+            sudo ufw status || true
+          fi
+          
+          # Check if firewalld exists
+          if command -v firewall-cmd &> /dev/null; then
+            echo "Firewalld found, configuring..."
+            sudo firewall-cmd --permanent --add-port=2026/tcp || true
+            sudo firewall-cmd --reload || true
+          fi
+          
+          # Configure iptables directly
+          echo "Configuring iptables..."
+          sudo iptables -I INPUT -p tcp --dport 2026 -j ACCEPT || true
+          sudo iptables -I INPUT -p tcp --dport 22 -j ACCEPT || true
+          sudo iptables-save || true
+          
+          # Check if port is listening
+          echo "=== Checking if port 2026 is listening ==="
+          sudo ss -tlnp | grep 2026 || sudo netstat -tlnp | grep 2026 || echo "Port check completed"
+          
+          # Check local panel response
+          echo "=== Testing local panel ==="
+          curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:2026 || echo "Local test done"
 
       - name: Get Server IP and Show Panel URL
         run: |
@@ -53,48 +83,46 @@ jobs:
           echo "SERVER_IP=$SERVER_IP" >> $GITHUB_ENV
           
           echo ""
-          echo "╔══════════════════════════════════════════════════════════════╗"
-          echo "║           🚀 3X-UI PANEL ACCESS INFORMATION                 ║"
-          echo "╠══════════════════════════════════════════════════════════════╣"
-          echo "║  Username:     nomin                                         ║"
-          echo "║  Password:     2010                                          ║"
-          echo "║  Port:         2026                                           ║"
-          echo "║  WebBasePath:  ${{ env.WEB_BASE_PATH }}"                      ║"
-          echo "║                                                               ║"
-          echo "║  🔗 PANEL URL: http://${SERVER_IP}:2026/${{ env.WEB_BASE_PATH }}  ║"
-          echo "╠══════════════════════════════════════════════════════════════╣"
-          echo "║  ⏰ Panel will run for 6 hours then auto-stop                ║"
-          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo "=========================================="
+          echo "        3X-UI PANEL ACCESS INFO"
+          echo "=========================================="
+          echo "  Username:     nomin"
+          echo "  Password:     2010"
+          echo "  Port:         2026"
+          echo "  WebBasePath:  ${{ env.WEB_BASE_PATH }}"
           echo ""
-          echo "✅ Open this URL in your web browser to access the panel!"
+          echo "  PANEL URL: http://${SERVER_IP}:2026/${{ env.WEB_BASE_PATH }}"
+          echo "=========================================="
+          echo "  Panel will run for 6 hours then stop"
+          echo "=========================================="
           echo ""
 
       - name: Keep Panel Running for 6 Hours
         run: |
-          echo "⏳ Panel is running on VPS IP..."
-          echo "Access URL: http://${{ env.SERVER_IP }}:2026/${{ env.WEB_BASE_PATH }}"
-          echo "Username: nomin"
-          echo "Password: 2010"
+          echo "Panel is running..."
+          echo "URL: http://${{ env.SERVER_IP }}:2026/${{ env.WEB_BASE_PATH }}"
           echo ""
           
           # Run for 6 hours (360 minutes)
           for i in $(seq 1 360); do
             sleep 60
-            echo "[$i/360 minutes] Panel running at http://${{ env.SERVER_IP }}:2026/${{ env.WEB_BASE_PATH }}"
+            echo "[$i/360 minutes] Panel running..."
             
             # Check if panel is still alive
-            if ! curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:2026/${{ env.WEB_BASE_PATH }} | grep -q "200\|307"; then
-              echo "⚠️ Panel seems down, restarting..."
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:2026/${{ env.WEB_BASE_PATH }} || echo "000")
+            if [ "$STATUS" != "200" ] && [ "$STATUS" != "307" ]; then
+              echo "Panel seems down (status: $STATUS), restarting..."
               sudo systemctl restart x-ui
+              sleep 3
             fi
           done
           
-          echo "✅ 6 hours completed. Stopping panel..."
+          echo "6 hours completed. Stopping panel..."
 
       - name: Stop Panel After 6 Hours
         if: always()
         run: |
-          echo "🛑 Stopping 3X-UI Panel..."
+          echo "Stopping 3X-UI Panel..."
           sudo systemctl stop x-ui || true
           sudo systemctl disable x-ui || true
-          echo "✅ Panel stopped successfully"
+          echo "Panel stopped"
