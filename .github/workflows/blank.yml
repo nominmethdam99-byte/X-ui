@@ -1,4 +1,4 @@
-name: 3X-UI Panel Deploy - FIXED
+name: 3X-UI Panel with Public Tunnel
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 jobs:
   deploy-3x-ui:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 360  # 6 hours max
 
     steps:
       - name: Checkout repository
@@ -24,122 +24,85 @@ jobs:
 
       - name: Configure 3X-UI Settings
         run: |
-          # Generate random web base path
           webBasePath=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 18)
           echo "WEB_BASE_PATH=$webBasePath" >> $GITHUB_ENV
           
-          # Set username, password, port, and webBasePath
           sudo /usr/local/x-ui/x-ui setting -username "nomin" -password "2010" -port "2026" -webBasePath "$webBasePath"
-          
-          # IMPORTANT: Bind to ALL interfaces (0.0.0.0) not just localhost
           sudo /usr/local/x-ui/x-ui setting -listenIP "0.0.0.0"
-          
-          # Restart service
           sudo systemctl restart x-ui
           sleep 5
-          
-          # Verify panel is running
-          sudo systemctl status x-ui --no-pager || true
 
-      - name: FIX FIREWALL - Open Port 2026
+      - name: Install Cloudflare Tunnel (cloudflared)
         run: |
-          echo "=== FIXING FIREWALL RULES ==="
+          # Download cloudflared
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb || sudo apt-get install -f -y
           
-          # Method 1: UFW (Ubuntu/Debian)
-          if command -v ufw &> /dev/null; then
-            echo "Configuring UFW..."
-            sudo ufw --force reset
-            sudo ufw default deny incoming
-            sudo ufw default allow outgoing
-            sudo ufw allow 22/tcp
-            sudo ufw allow 80/tcp
-            sudo ufw allow 443/tcp
-            sudo ufw allow 2026/tcp
-            sudo ufw --force enable
-            sudo ufw status verbose
+          # Start tunnel to expose port 2026
+          nohup cloudflared tunnel --url http://localhost:2026 > /tmp/tunnel.log 2>&1 &
+          sleep 15
+          
+          # Get public URL from logs
+          TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' /tmp/tunnel.log | head -1)
+          
+          if [ -z "$TUNNEL_URL" ]; then
+            sleep 10
+            TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' /tmp/tunnel.log | head -1)
           fi
           
-          # Method 2: Firewalld (CentOS/RHEL)
-          if command -v firewall-cmd &> /dev/null; then
-            echo "Configuring Firewalld..."
-            sudo firewall-cmd --permanent --add-port=2026/tcp
-            sudo firewall-cmd --permanent --add-port=22/tcp
-            sudo firewall-cmd --permanent --add-port=80/tcp
-            sudo firewall-cmd --permanent --add-port=443/tcp
-            sudo firewall-cmd --reload
-            sudo firewall-cmd --list-all
+          if [ -z "$TUNNEL_URL" ]; then
+            cat /tmp/tunnel.log
+            echo "Tunnel failed to start"
+            exit 1
           fi
           
-          # Method 3: iptables (Universal)
-          echo "Configuring iptables..."
-          sudo iptables -F
-          sudo iptables -X
-          sudo iptables -P INPUT DROP
-          sudo iptables -P FORWARD DROP
-          sudo iptables -P OUTPUT ACCEPT
-          sudo iptables -A INPUT -i lo -j ACCEPT
-          sudo iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-          sudo iptables -A INPUT -p tcp --dport 22 -j ACCEPT
-          sudo iptables -A INPUT -p tcp --dport 80 -j ACCEPT
-          sudo iptables -A INPUT -p tcp --dport 443 -j ACCEPT
-          sudo iptables -A INPUT -p tcp --dport 2026 -j ACCEPT
-          sudo iptables -A INPUT -p icmp -j ACCEPT
-          sudo iptables-save | sudo tee /etc/iptables/rules.v4 2>/dev/null || sudo iptables-save
-          
-          echo "=== Firewall Fixed ==="
+          echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
+          echo "PANEL_URL=${TUNNEL_URL}/${WEB_BASE_PATH}" >> $GITHUB_ENV
 
-      - name: Verify Port is Listening
+      - name: Show Panel Access URL
         run: |
-          echo "=== Checking Port Binding ==="
-          sudo ss -tlnp | grep 2026 || echo "ss not showing"
-          sudo netstat -tlnp 2>/dev/null | grep 2026 || echo "netstat not showing"
-          
-          echo "=== Testing Local Connection ==="
-          curl -v http://127.0.0.1:2026/${{ env.WEB_BASE_PATH }} 2>&1 | head -20 || echo "Local curl failed"
-          
-          echo "=== Testing Public IP Connection ==="
-          IP=$(curl -s https://api4.ipify.org)
-          echo "Public IP: $IP"
-          curl -v http://$IP:2026/${{ env.WEB_BASE_PATH }} 2>&1 | head -20 || echo "Public curl failed"
-
-      - name: Get Server IP and Show Panel URL
-        run: |
-          SERVER_IP=$(curl -s https://api4.ipify.org)
-          echo "SERVER_IP=$SERVER_IP" >> $GITHUB_ENV
-          
           echo ""
           echo "=========================================="
-          echo "        3X-UI PANEL ACCESS INFO"
+          echo "     3X-UI PANEL ACCESS INFORMATION"
           echo "=========================================="
           echo "  Username:     nomin"
           echo "  Password:     2010"
           echo "  Port:         2026"
           echo "  WebBasePath:  ${{ env.WEB_BASE_PATH }}"
           echo ""
-          echo "  PANEL URL: http://${SERVER_IP}:2026/${{ env.WEB_BASE_PATH }}"
-          echo "=========================================="
-          echo "  IMPORTANT: If URL doesn't work:"
-          echo "  1. Check VPS provider firewall (AWS/DigitalOcean/etc)"
-          echo "  2. Check cloud security groups"
-          echo "  3. Port 2026 must be open in ALL firewalls"
+          echo "  PUBLIC PANEL URL:"
+          echo "  ${{ env.PANEL_URL }}"
+          echo ""
+          echo "  This URL works in your browser!"
+          echo "  Panel will run for 6 hours"
           echo "=========================================="
 
       - name: Keep Panel Running for 6 Hours
         run: |
+          echo "Panel running at: ${{ env.PANEL_URL }}"
+          echo ""
+          
           for i in $(seq 1 360); do
             sleep 60
-            echo "[$i/360] Running..."
+            echo "[$i/360 minutes] Panel alive at: ${{ env.PANEL_URL }}"
             
-            # Check panel health
+            # Check if panel is still alive
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:2026/${{ env.WEB_BASE_PATH }} || echo "000")
             if [ "$STATUS" != "200" ] && [ "$STATUS" != "307" ]; then
               echo "Panel down, restarting..."
               sudo systemctl restart x-ui
+            fi
+            
+            # Check if tunnel is still running
+            if ! pgrep -f "cloudflared" > /dev/null; then
+              echo "Tunnel stopped, restarting..."
+              nohup cloudflared tunnel --url http://localhost:2026 > /tmp/tunnel.log 2>&1 &
+              sleep 10
             fi
           done
 
       - name: Cleanup
         if: always()
         run: |
+          sudo pkill cloudflared || true
           sudo systemctl stop x-ui || true
-          sudo iptables -D INPUT -p tcp --dport 2026 -j ACCEPT || true
