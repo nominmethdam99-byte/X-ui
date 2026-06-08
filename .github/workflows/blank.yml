@@ -1,4 +1,4 @@
-name: 3X-UI Panel with Public Tunnel
+name: 3X-UI Panel with SSL + Cloudflare + Bore.pub
 
 on:
   push:
@@ -32,77 +32,184 @@ jobs:
           sudo systemctl restart x-ui
           sleep 5
 
+      - name: Setup SSL Certificate (Self-Signed)
+        run: |
+          echo "=== Generating SSL Certificate ==="
+          
+          # Create cert directory
+          sudo mkdir -p /root/cert
+          
+          # Generate self-signed SSL certificate
+          sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+            -keyout /root/cert/privkey.pem \
+            -out /root/cert/fullchain.pem \
+            -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost"
+          
+          # Set permissions
+          sudo chmod 600 /root/cert/privkey.pem
+          sudo chmod 644 /root/cert/fullchain.pem
+          
+          # Apply SSL to 3X-UI
+          sudo /usr/local/x-ui/x-ui cert -webCert /root/cert/fullchain.pem -webCertKey /root/cert/privkey.pem
+          
+          # Restart to apply SSL
+          sudo systemctl restart x-ui
+          sleep 3
+          
+          echo "SSL Certificate Applied Successfully"
+
       - name: Install Cloudflare Tunnel (cloudflared)
         run: |
-          # Download cloudflared
+          echo "=== Installing Cloudflare Tunnel ==="
+          
+          # Download and install cloudflared
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb || sudo apt-get install -f -y
           
           # Start tunnel to expose port 2026
-          nohup cloudflared tunnel --url http://localhost:2026 > /tmp/tunnel.log 2>&1 &
+          nohup cloudflared tunnel --url http://localhost:2026 > /tmp/cloudflare.log 2>&1 &
           sleep 15
           
           # Get public URL from logs
-          TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' /tmp/tunnel.log | head -1)
+          CF_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' /tmp/cloudflare.log | head -1)
           
-          if [ -z "$TUNNEL_URL" ]; then
+          if [ -z "$CF_URL" ]; then
             sleep 10
-            TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' /tmp/tunnel.log | head -1)
+            CF_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' /tmp/cloudflare.log | head -1)
           fi
           
-          if [ -z "$TUNNEL_URL" ]; then
-            cat /tmp/tunnel.log
-            echo "Tunnel failed to start"
+          if [ -z "$CF_URL" ]; then
+            echo "Cloudflare tunnel failed to start"
+            cat /tmp/cloudflare.log
             exit 1
           fi
           
-          echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
-          echo "PANEL_URL=${TUNNEL_URL}/${WEB_BASE_PATH}" >> $GITHUB_ENV
+          echo "CF_URL=$CF_URL" >> $GITHUB_ENV
+          echo "CLOUDFLARE_PANEL_URL=${CF_URL}/${WEB_BASE_PATH}" >> $GITHUB_ENV
+          echo "Cloudflare Tunnel: $CF_URL"
 
-      - name: Show Panel Access URL
+      - name: Install Bore.pub Tunnel (Port 443)
+        run: |
+          echo "=== Installing Bore.pub Tunnel ==="
+          
+          # Install bore CLI
+          curl -LSs https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
+          tar -xzf /tmp/bore.tar.gz -C /tmp
+          sudo mv /tmp/bore /usr/local/bin/bore
+          chmod +x /usr/local/bin/bore
+          
+          # Start bore.pub tunnel on port 443 (forwarding local 2026)
+          nohup bore local 2026 --to bore.pub --port 443 > /tmp/bore.log 2>&1 &
+          sleep 10
+          
+          # Get bore.pub URL from logs
+          BORE_URL=$(grep -o 'bore.pub:[0-9]*' /tmp/bore.log | head -1)
+          
+          if [ -z "$BORE_URL" ]; then
+            sleep 5
+            BORE_URL=$(grep -o 'bore.pub:[0-9]*' /tmp/bore.log | head -1)
+          fi
+          
+          if [ -z "$BORE_URL" ]; then
+            echo "Bore.pub initial connection failed, will retry..."
+            cat /tmp/bore.log
+          else
+            echo "BORE_URL=http://$BORE_URL" >> $GITHUB_ENV
+            echo "BORE_PANEL_URL=http://$BORE_URL/${WEB_BASE_PATH}" >> $GITHUB_ENV
+            echo "Bore.pub Tunnel: http://$BORE_URL"
+          fi
+
+      - name: Show All Panel Access URLs
         run: |
           echo ""
-          echo "=========================================="
-          echo "     3X-UI PANEL ACCESS INFORMATION"
-          echo "=========================================="
-          echo "  Username:     nomin"
-          echo "  Password:     2010"
-          echo "  Port:         2026"
-          echo "  WebBasePath:  ${{ env.WEB_BASE_PATH }}"
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║           3X-UI PANEL ACCESS INFORMATION                     ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  Username:     nomin                                         ║"
+          echo "║  Password:     2010                                          ║"
+          echo "║  Local Port:    2026                                          ║"
+          echo "║  WebBasePath:  ${{ env.WEB_BASE_PATH }}"                      ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  🔒 SSL:        Self-Signed Certificate Applied               ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  🌐 CLOUDFLARE TUNNEL (HTTPS):                              ║"
+          echo "║  ${{ env.CLOUDFLARE_PANEL_URL }}"                             ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  🔗 BORE.PUB TUNNEL (HTTP):                                 ║"
+          echo "║  ${{ env.BORE_PANEL_URL }}"                                   ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  ⏰ Panel will run for 6 hours then auto-stop               ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
           echo ""
-          echo "  PUBLIC PANEL URL:"
-          echo "  ${{ env.PANEL_URL }}"
-          echo ""
-          echo "  This URL works in your browser!"
-          echo "  Panel will run for 6 hours"
-          echo "=========================================="
 
-      - name: Keep Panel Running for 6 Hours
+      - name: Monitor and Keep Running (6 Hours)
         run: |
-          echo "Panel running at: ${{ env.PANEL_URL }}"
+          echo "=== Starting 6-Hour Monitoring ==="
+          echo "Cloudflare: ${{ env.CLOUDFLARE_PANEL_URL }}"
+          echo "Bore.pub: ${{ env.BORE_PANEL_URL }}"
           echo ""
           
           for i in $(seq 1 360); do
             sleep 60
-            echo "[$i/360 minutes] Panel alive at: ${{ env.PANEL_URL }}"
             
-            # Check if panel is still alive
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:2026/${{ env.WEB_BASE_PATH }} || echo "000")
-            if [ "$STATUS" != "200" ] && [ "$STATUS" != "307" ]; then
-              echo "Panel down, restarting..."
+            # Check 3X-UI panel health
+            PANEL_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:2026/${{ env.WEB_BASE_PATH }} || echo "000")
+            
+            # Check Cloudflare tunnel
+            if ! pgrep -f "cloudflared" > /dev/null; then
+              echo "[$i/360] ⚠️ Cloudflare tunnel DOWN, restarting..."
+              nohup cloudflared tunnel --url http://localhost:2026 > /tmp/cloudflare.log 2>&1 &
+              sleep 10
+              CF_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' /tmp/cloudflare.log | head -1)
+              echo "[$i/360] 🌐 New Cloudflare URL: $CF_URL"
+            fi
+            
+            # Check Bore.pub tunnel
+            if ! pgrep -x "bore" > /dev/null; then
+              echo "[$i/360] ⚠️ Bore.pub tunnel DOWN, restarting..."
+              nohup bore local 2026 --to bore.pub --port 443 > /tmp/bore.log 2>&1 &
+              sleep 10
+              echo "[$i/360] 🔗 Bore.pub restarted"
+            fi
+            
+            # Show Bore.pub logs every 10 minutes
+            if [ $((i % 10)) -eq 0 ]; then
+              echo ""
+              echo "=== BORE.PUB LOGS (Minute $i) ==="
+              cat /tmp/bore.log | tail -20
+              echo "=================================="
+              echo ""
+            fi
+            
+            # Show status
+            if [ "$PANEL_STATUS" = "200" ] || [ "$PANEL_STATUS" = "307" ]; then
+              echo "[$i/360] ✅ Panel OK | Cloudflare: RUNNING | Bore.pub: RUNNING"
+            else
+              echo "[$i/360] ⚠️ Panel status: $PANEL_STATUS, restarting..."
               sudo systemctl restart x-ui
             fi
-            
-            # Check if tunnel is still running
-            if ! pgrep -f "cloudflared" > /dev/null; then
-              echo "Tunnel stopped, restarting..."
-              nohup cloudflared tunnel --url http://localhost:2026 > /tmp/tunnel.log 2>&1 &
-              sleep 10
-            fi
           done
+          
+          echo "✅ 6 hours completed!"
+
+      - name: Show Final Bore.pub Logs
+        if: always()
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║           FINAL BORE.PUB LOGS                               ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          cat /tmp/bore.log | tail -50
+          echo ""
+          echo "=== Cloudflare Logs ==="
+          cat /tmp/cloudflare.log | tail -20
 
       - name: Cleanup
         if: always()
         run: |
+          echo "🛑 Stopping all services..."
           sudo pkill cloudflared || true
+          sudo pkill bore || true
           sudo systemctl stop x-ui || true
+          echo "✅ All services stopped"
