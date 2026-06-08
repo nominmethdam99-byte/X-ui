@@ -37,34 +37,49 @@ jobs:
           
           # Restart service
           sudo systemctl restart x-ui
+          sleep 3
+          
+          # Verify panel is running
+          sudo systemctl status x-ui --no-pager
           
           # Save settings for later steps
           echo "WEB_BASE_PATH=$webBasePath" >> $GITHUB_ENV
           echo "PANEL_PORT=2026" >> $GITHUB_ENV
 
-      - name: Install ngrok and Expose Panel
+      - name: Install and Configure ngrok
         run: |
-          # Download and install ngrok
-          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ngrok
+          # Download ngrok binary directly
+          curl -Lo /tmp/ngrok.tgz https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+          tar -xzf /tmp/ngrok.tgz -C /tmp
+          chmod +x /tmp/ngrok
+          sudo mv /tmp/ngrok /usr/local/bin/ngrok
+          
+          # Configure ngrok with authtoken
+          ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
           
           # Start ngrok tunnel for port 2026
-          ngrok http 2026 --log=stdout > /tmp/ngrok.log 2>&1 &
-          sleep 10
+          nohup ngrok http 2026 --log=stdout > /tmp/ngrok.log 2>&1 &
+          sleep 15
+          
+          # Check if ngrok started
+          if ! pgrep -x "ngrok" > /dev/null; then
+            echo "❌ Ngrok failed to start!"
+            cat /tmp/ngrok.log
+            exit 1
+          fi
           
           # Get public URL from ngrok API
           NGROK_URL=$(curl -s http://127.0.0.1:4040/api/tunnels | grep -o '"public_url":"[^"]*' | grep -o 'https://[^"]*')
           
           if [ -z "$NGROK_URL" ]; then
-            echo "⚠️ Ngrok failed to start, trying alternative..."
-            sleep 5
-            NGROK_URL=$(curl -s http://127.0.0.1:4040/api/tunnels | grep -o '"public_url":"[^"]*' | grep -o 'https://[^"]*')
+            echo "❌ Failed to get ngrok URL!"
+            cat /tmp/ngrok.log
+            exit 1
           fi
           
           echo "NGROK_URL=$NGROK_URL" >> $GITHUB_ENV
           echo "PANEL_URL=${NGROK_URL}/${WEB_BASE_PATH}" >> $GITHUB_ENV
+          echo "✅ Ngrok tunnel established!"
 
       - name: Show Panel Access URL
         run: |
@@ -82,6 +97,10 @@ jobs:
           echo "║  ⏰ Panel will run for 6 hours then auto-stop                ║"
           echo "╚══════════════════════════════════════════════════════════════╝"
           echo ""
+          
+          # Test if panel is accessible
+          echo "Testing panel accessibility..."
+          curl -I -s http://127.0.0.1:2026/${{ env.WEB_BASE_PATH }} || echo "Local check completed"
 
       - name: Keep Panel Running for 6 Hours
         run: |
@@ -98,6 +117,13 @@ jobs:
             if ! curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:2026/${{ env.WEB_BASE_PATH }} | grep -q "200\|307"; then
               echo "⚠️ Panel seems down, restarting..."
               sudo systemctl restart x-ui
+            fi
+            
+            # Check if ngrok is still running
+            if ! pgrep -x "ngrok" > /dev/null; then
+              echo "⚠️ Ngrok stopped, restarting..."
+              nohup ngrok http 2026 --log=stdout > /tmp/ngrok.log 2>&1 &
+              sleep 5
             fi
           done
           
