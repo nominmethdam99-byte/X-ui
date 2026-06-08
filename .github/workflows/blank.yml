@@ -1,4 +1,4 @@
-name: 3X-UI Panel Deploy
+name: 3X-UI Panel Deploy - FIXED
 
 on:
   push:
@@ -21,16 +21,18 @@ jobs:
           sudo bash /tmp/install.sh << 'EOF'
           n
           EOF
-        shell: bash
 
       - name: Configure 3X-UI Settings
         run: |
-          # Set username, password, and port
-          sudo /usr/local/x-ui/x-ui setting -username "nomin" -password "2010" -port "2026"
-          
           # Generate random web base path
           webBasePath=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 18)
-          sudo /usr/local/x-ui/x-ui setting -webBasePath "$webBasePath"
+          echo "WEB_BASE_PATH=$webBasePath" >> $GITHUB_ENV
+          
+          # Set username, password, port, and webBasePath
+          sudo /usr/local/x-ui/x-ui setting -username "nomin" -password "2010" -port "2026" -webBasePath "$webBasePath"
+          
+          # IMPORTANT: Bind to ALL interfaces (0.0.0.0) not just localhost
+          sudo /usr/local/x-ui/x-ui setting -listenIP "0.0.0.0"
           
           # Restart service
           sudo systemctl restart x-ui
@@ -38,48 +40,71 @@ jobs:
           
           # Verify panel is running
           sudo systemctl status x-ui --no-pager || true
-          
-          # Save settings
-          echo "WEB_BASE_PATH=$webBasePath" >> $GITHUB_ENV
-          echo "PANEL_PORT=2026" >> $GITHUB_ENV
 
-      - name: Configure Firewall and Port Forwarding
+      - name: FIX FIREWALL - Open Port 2026
         run: |
-          echo "=== Configuring Firewall ==="
+          echo "=== FIXING FIREWALL RULES ==="
           
-          # Check if ufw exists
+          # Method 1: UFW (Ubuntu/Debian)
           if command -v ufw &> /dev/null; then
-            echo "UFW found, configuring..."
-            sudo ufw allow 2026/tcp || true
-            sudo ufw allow 22/tcp || true
-            sudo ufw status || true
+            echo "Configuring UFW..."
+            sudo ufw --force reset
+            sudo ufw default deny incoming
+            sudo ufw default allow outgoing
+            sudo ufw allow 22/tcp
+            sudo ufw allow 80/tcp
+            sudo ufw allow 443/tcp
+            sudo ufw allow 2026/tcp
+            sudo ufw --force enable
+            sudo ufw status verbose
           fi
           
-          # Check if firewalld exists
+          # Method 2: Firewalld (CentOS/RHEL)
           if command -v firewall-cmd &> /dev/null; then
-            echo "Firewalld found, configuring..."
-            sudo firewall-cmd --permanent --add-port=2026/tcp || true
-            sudo firewall-cmd --reload || true
+            echo "Configuring Firewalld..."
+            sudo firewall-cmd --permanent --add-port=2026/tcp
+            sudo firewall-cmd --permanent --add-port=22/tcp
+            sudo firewall-cmd --permanent --add-port=80/tcp
+            sudo firewall-cmd --permanent --add-port=443/tcp
+            sudo firewall-cmd --reload
+            sudo firewall-cmd --list-all
           fi
           
-          # Configure iptables directly
+          # Method 3: iptables (Universal)
           echo "Configuring iptables..."
-          sudo iptables -I INPUT -p tcp --dport 2026 -j ACCEPT || true
-          sudo iptables -I INPUT -p tcp --dport 22 -j ACCEPT || true
-          sudo iptables-save || true
+          sudo iptables -F
+          sudo iptables -X
+          sudo iptables -P INPUT DROP
+          sudo iptables -P FORWARD DROP
+          sudo iptables -P OUTPUT ACCEPT
+          sudo iptables -A INPUT -i lo -j ACCEPT
+          sudo iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+          sudo iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+          sudo iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+          sudo iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+          sudo iptables -A INPUT -p tcp --dport 2026 -j ACCEPT
+          sudo iptables -A INPUT -p icmp -j ACCEPT
+          sudo iptables-save | sudo tee /etc/iptables/rules.v4 2>/dev/null || sudo iptables-save
           
-          # Check if port is listening
-          echo "=== Checking if port 2026 is listening ==="
-          sudo ss -tlnp | grep 2026 || sudo netstat -tlnp | grep 2026 || echo "Port check completed"
+          echo "=== Firewall Fixed ==="
+
+      - name: Verify Port is Listening
+        run: |
+          echo "=== Checking Port Binding ==="
+          sudo ss -tlnp | grep 2026 || echo "ss not showing"
+          sudo netstat -tlnp 2>/dev/null | grep 2026 || echo "netstat not showing"
           
-          # Check local panel response
-          echo "=== Testing local panel ==="
-          curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:2026 || echo "Local test done"
+          echo "=== Testing Local Connection ==="
+          curl -v http://127.0.0.1:2026/${{ env.WEB_BASE_PATH }} 2>&1 | head -20 || echo "Local curl failed"
+          
+          echo "=== Testing Public IP Connection ==="
+          IP=$(curl -s https://api4.ipify.org)
+          echo "Public IP: $IP"
+          curl -v http://$IP:2026/${{ env.WEB_BASE_PATH }} 2>&1 | head -20 || echo "Public curl failed"
 
       - name: Get Server IP and Show Panel URL
         run: |
-          # Get public IP
-          SERVER_IP=$(curl -s https://api4.ipify.org || curl -s https://ipv4.icanhazip.com || curl -s https://v4.ident.me)
+          SERVER_IP=$(curl -s https://api4.ipify.org)
           echo "SERVER_IP=$SERVER_IP" >> $GITHUB_ENV
           
           echo ""
@@ -93,36 +118,28 @@ jobs:
           echo ""
           echo "  PANEL URL: http://${SERVER_IP}:2026/${{ env.WEB_BASE_PATH }}"
           echo "=========================================="
-          echo "  Panel will run for 6 hours then stop"
+          echo "  IMPORTANT: If URL doesn't work:"
+          echo "  1. Check VPS provider firewall (AWS/DigitalOcean/etc)"
+          echo "  2. Check cloud security groups"
+          echo "  3. Port 2026 must be open in ALL firewalls"
           echo "=========================================="
-          echo ""
 
       - name: Keep Panel Running for 6 Hours
         run: |
-          echo "Panel is running..."
-          echo "URL: http://${{ env.SERVER_IP }}:2026/${{ env.WEB_BASE_PATH }}"
-          echo ""
-          
-          # Run for 6 hours (360 minutes)
           for i in $(seq 1 360); do
             sleep 60
-            echo "[$i/360 minutes] Panel running..."
+            echo "[$i/360] Running..."
             
-            # Check if panel is still alive
+            # Check panel health
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:2026/${{ env.WEB_BASE_PATH }} || echo "000")
             if [ "$STATUS" != "200" ] && [ "$STATUS" != "307" ]; then
-              echo "Panel seems down (status: $STATUS), restarting..."
+              echo "Panel down, restarting..."
               sudo systemctl restart x-ui
-              sleep 3
             fi
           done
-          
-          echo "6 hours completed. Stopping panel..."
 
-      - name: Stop Panel After 6 Hours
+      - name: Cleanup
         if: always()
         run: |
-          echo "Stopping 3X-UI Panel..."
           sudo systemctl stop x-ui || true
-          sudo systemctl disable x-ui || true
-          echo "Panel stopped"
+          sudo iptables -D INPUT -p tcp --dport 2026 -j ACCEPT || true
