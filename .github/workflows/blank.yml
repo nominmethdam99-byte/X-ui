@@ -16,10 +16,14 @@ jobs:
 
       - name: Install 3X-UI Panel
         run: |
-          # Run as root (sudo)
-          sudo bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh) << 'INSTALL'
+          # Download install script first
+          curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh -o /tmp/install.sh
+          chmod +x /tmp/install.sh
+          
+          # Run install script with sudo (non-interactive)
+          sudo bash /tmp/install.sh << 'EOF'
           n
-          INSTALL
+          EOF
         shell: bash
 
       - name: Configure 3X-UI Settings
@@ -38,12 +42,32 @@ jobs:
           echo "WEB_BASE_PATH=$webBasePath" >> $GITHUB_ENV
           echo "PANEL_PORT=2026" >> $GITHUB_ENV
 
-      - name: Get Server IP and Show Panel URL
+      - name: Install ngrok and Expose Panel
         run: |
-          # Get public IP
-          SERVER_IP=$(curl -s https://api4.ipify.org || curl -s https://ipv4.icanhazip.com || curl -s https://v4.ident.me)
-          echo "SERVER_IP=$SERVER_IP" >> $GITHUB_ENV
+          # Download and install ngrok
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ngrok
           
+          # Start ngrok tunnel for port 2026
+          ngrok http 2026 --log=stdout > /tmp/ngrok.log 2>&1 &
+          sleep 10
+          
+          # Get public URL from ngrok API
+          NGROK_URL=$(curl -s http://127.0.0.1:4040/api/tunnels | grep -o '"public_url":"[^"]*' | grep -o 'https://[^"]*')
+          
+          if [ -z "$NGROK_URL" ]; then
+            echo "⚠️ Ngrok failed to start, trying alternative..."
+            sleep 5
+            NGROK_URL=$(curl -s http://127.0.0.1:4040/api/tunnels | grep -o '"public_url":"[^"]*' | grep -o 'https://[^"]*')
+          fi
+          
+          echo "NGROK_URL=$NGROK_URL" >> $GITHUB_ENV
+          echo "PANEL_URL=${NGROK_URL}/${WEB_BASE_PATH}" >> $GITHUB_ENV
+
+      - name: Show Panel Access URL
+        run: |
           echo ""
           echo "╔══════════════════════════════════════════════════════════════╗"
           echo "║           🚀 3X-UI PANEL ACCESS INFORMATION                 ║"
@@ -53,7 +77,7 @@ jobs:
           echo "║  Port:         2026                                           ║"
           echo "║  WebBasePath:  ${{ env.WEB_BASE_PATH }}"                      ║"
           echo "║                                                               ║"
-          echo "║  🔗 PANEL URL: http://${SERVER_IP}:2026/${{ env.WEB_BASE_PATH }}  ║"
+          echo "║  🔗 PANEL URL: ${{ env.PANEL_URL }}                            ║"
           echo "╠══════════════════════════════════════════════════════════════╣"
           echo "║  ⏰ Panel will run for 6 hours then auto-stop                ║"
           echo "╚══════════════════════════════════════════════════════════════╝"
@@ -62,13 +86,13 @@ jobs:
       - name: Keep Panel Running for 6 Hours
         run: |
           echo "⏳ Panel is running... Will auto-stop after 6 hours"
-          echo "Access URL: http://${{ env.SERVER_IP }}:2026/${{ env.WEB_BASE_PATH }}"
+          echo "Access URL: ${{ env.PANEL_URL }}"
           echo ""
           
-          # Run for 6 hours (21600 seconds)
+          # Run for 6 hours (360 minutes)
           for i in $(seq 1 360); do
             sleep 60
-            echo "[$i/360 minutes elapsed] Panel still running at http://${{ env.SERVER_IP }}:2026/${{ env.WEB_BASE_PATH }}"
+            echo "[$i/360 minutes] Panel running at ${{ env.PANEL_URL }}"
             
             # Check if panel is still alive
             if ! curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:2026/${{ env.WEB_BASE_PATH }} | grep -q "200\|307"; then
@@ -83,6 +107,7 @@ jobs:
         if: always()
         run: |
           echo "🛑 Stopping 3X-UI Panel..."
+          sudo pkill ngrok || true
           sudo systemctl stop x-ui || true
           sudo systemctl disable x-ui || true
           echo "✅ Panel stopped successfully"
