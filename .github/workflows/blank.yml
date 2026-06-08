@@ -1,0 +1,86 @@
+version: '3.8'
+
+services:
+  # Panel 1: Portainer - Docker Management UI
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: panel_portainer
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    environment:
+      - ADMIN_USERNAME=nomin
+      - ADMIN_PASSWORD=2010
+    networks:
+      - panel_network
+
+  # Panel 2: Nginx Proxy Manager - Reverse Proxy UI
+  nginx-proxy-manager:
+    image: jc21/nginx-proxy-manager:latest
+    container_name: panel_nginx
+    restart: unless-stopped
+    ports:
+      - "81:81"    # Admin UI
+      - "80:80"    # HTTP
+      - "443:443"  # HTTPS
+    volumes:
+      - npm_data:/data
+      - npm_letsencrypt:/etc/letsencrypt
+    environment:
+      - DB_SQLITE_FILE=/data/database.sqlite
+      - INITIAL_ADMIN_EMAIL=nomin@admin.local
+      - INITIAL_ADMIN_PASSWORD=2010
+    networks:
+      - panel_network
+
+  # Panel 3: Simple Web Dashboard (Heimdall Application Dashboard)
+  heimdall:
+    image: linuxserver/heimdall:latest
+    container_name: panel_heimdall
+    restart: unless-stopped
+    ports:
+      - "2026:80"  # Main port you requested
+    volumes:
+      - heimdall_config:/config
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+    networks:
+      - panel_network
+
+  # Reverse Proxy to unify all panels under port 2026
+  traefik:
+    image: traefik:v2.10
+    container_name: panel_traefik
+    restart: unless-stopped
+    ports:
+      - "2026:80"     # Main entry point
+      - "8080:8080"   # Traefik Dashboard
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - panel_network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik.rule=Host(`panel.local`)"
+      - "traefik.http.routers.traefik.service=api@internal"
+      - "traefik.http.middlewares.auth.basicauth.users=nomin:$$apr1$$H6uskkkW$$IgXLP6ewTrSuBkTrqE8wj/"  # password: 2010
+
+networks:
+  panel_network:
+    driver: bridge
+
+volumes:
+  portainer_data:
+  npm_data:
+  npm_letsencrypt:
+  heimdall_config:
