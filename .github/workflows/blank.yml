@@ -23,22 +23,41 @@ jobs:
         VPS_USER: ${{ secrets.VPS_USER }}
         VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
       run: |
-        # FIX 1: Better SSH connection test with verbose output
+        # FIX: Check if secrets are set
+        if [ -z "$VPS_IP" ] || [ -z "$VPS_USER" ] || [ -z "$VPS_PASSWORD" ]; then
+          echo "❌ ERROR: Missing GitHub Secrets!"
+          echo "Please add these secrets in your repository:"
+          echo "  - VPS_IP (your server IP address)"
+          echo "  - VPS_USER (username, usually 'root')"
+          echo "  - VPS_PASSWORD (your root password)"
+          echo ""
+          echo "Go to: https://github.com/YOUR_USER/YOUR_REPO/settings/secrets/actions"
+          exit 1
+        fi
+        
+        echo "✅ Secrets found:"
+        echo "  VPS_IP: $VPS_IP"
+        echo "  VPS_USER: $VPS_USER"
+        echo "  VPS_PASSWORD: [HIDDEN]"
+
+        # FIX 2: Use correct SSH syntax
         echo "Testing SSH connection to $VPS_USER@$VPS_IP..."
-        if ! sshpass -p "$VPS_PASSWORD" ssh -v -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $VPS_USER@$VPS_IP "exit 0" 2>&1; then
+        if ! sshpass -p "$VPS_PASSWORD" ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$VPS_USER@$VPS_IP" "echo '✅ SSH connected successfully'" 2>&1; then
           echo "❌ SSH Connection Failed!"
-          echo "Please check:"
-          echo "  - VPS_IP secret: $VPS_IP"
-          echo "  - VPS_USER secret: $VPS_USER"
-          echo "  - VPS_PASSWORD secret: [hidden]"
-          echo "  - Is SSH service running on VPS?"
-          echo "  - Is port 22 open in firewall?"
+          echo "Possible issues:"
+          echo "  - Wrong IP address: $VPS_IP"
+          echo "  - Wrong username: $VPS_USER"
+          echo "  - Wrong password"
+          echo "  - Port 22 blocked by firewall"
+          echo "  - SSH service not running"
+          echo ""
+          echo "Try manually: ssh $VPS_USER@$VPS_IP"
           exit 1
         fi
         echo "✅ SSH Connection successful!"
 
-        # FIX 2: Use proper quoting and escape variables in heredoc
-        sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $VPS_USER@$VPS_IP bash -s << 'EOF'
+        # Full setup
+        sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$VPS_USER@$VPS_IP" bash -s << 'EOF'
           set -e
           
           echo "========================================="
@@ -79,9 +98,9 @@ jobs:
           #!/bin/bash
           export PATH="/root/.cargo/bin:$PATH"
           while true; do
-            echo "Starting bore tunnel..."
+            echo "$(date): Starting bore tunnel..."
             ~/.cargo/bin/bore local 22 --to bore.pub 2>&1
-            echo "Tunnel died, restarting in 5 seconds..."
+            echo "$(date): Tunnel died, restarting in 5 seconds..."
             sleep 5
           done
           TUNNEL
@@ -97,44 +116,38 @@ jobs:
           sleep 3
 
           echo "========================================="
-          echo "7. GET TUNNEL INFO"
+          echo "7. TUNNEL STATUS"
           echo "========================================="
-          echo "Checking tunnel status..."
           if ps aux | grep -q "[b]ore local 22"; then
             echo "✅ Tunnel is running"
             echo ""
-            echo "To find your tunnel port:"
-            echo "  cat /root/tunnel.log | grep -o 'bore.pub:[0-9]*' | head -1"
+            echo "Find your tunnel port:"
+            echo "  cat /root/tunnel.log | grep -o 'bore.pub:[0-9]*' | tail -1"
             echo ""
-            echo "Or check manually at: https://bore.pub"
-            echo ""
-            echo "Connect with: ssh -p <PORT> root@bore.pub"
+            echo "Connect: ssh -p <PORT> root@bore.pub"
           else
-            echo "⚠️ Tunnel may not have started yet"
-            echo "Check logs: cat /root/tunnel.log"
+            echo "⚠️ Tunnel not running, check: cat /root/tunnel.log"
           fi
           
           echo "========================================="
-          echo "DEPLOYMENT COMPLETE!"
+          echo "✅ DEPLOYMENT COMPLETE!"
           echo "========================================="
         EOF
 
-    - name: Display connection info
+    - name: Show Connection Info
       if: success()
       run: |
+        echo ""
         echo "========================================="
         echo "✅ DEPLOYMENT SUCCESSFUL!"
         echo "========================================="
         echo ""
-        echo "To connect to your VPS via bore.pub tunnel:"
-        echo "1. SSH into your VPS manually:"
-        echo "   ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_IP }}"
+        echo "To connect to your VPS:"
+        echo "1. SSH manually: ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_IP }}"
         echo ""
-        echo "2. Check the tunnel port:"
-        echo "   cat /root/tunnel.log | grep -o 'bore.pub:[0-9]*' | head -1"
+        echo "2. Check tunnel port:"
+        echo "   ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_IP }} 'cat /root/tunnel.log | grep -o \"bore.pub:[0-9]*\" | tail -1'"
         echo ""
-        echo "3. Connect via tunnel:"
+        echo "3. Connect via bore.pub:"
         echo "   ssh -p <PORT> root@bore.pub"
-        echo ""
-        echo "Or check your tunnel at: https://bore.pub"
         echo "========================================="
