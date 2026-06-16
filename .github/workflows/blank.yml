@@ -1,4 +1,4 @@
-name: Deploy GPU VPS with Tunnel
+name: Deploy GPU VPS with SSH Tunnel
 
 on:
   push:
@@ -11,60 +11,91 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: Install sshpass
-      run: sudo apt install -y sshpass
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y sshpass curl wget
 
-    - name: Full Setup & Tunnel
+    - name: Deploy & Setup Tunnel
       env:
         VPS_IP: ${{ secrets.VPS_IP }}
         VPS_USER: ${{ secrets.VPS_USER }}
         VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
       run: |
+        # Test connection first
+        echo "Testing SSH connection..."
+        sshpass -p "$VPS_PASSWORD" ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP "echo 'SSH connected successfully'" || {
+          echo "ERROR: Cannot connect to VPS. Check IP and credentials."
+          exit 1
+        }
+
+        # Full setup
         sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP << 'EOF'
-          # ============================================
-          # 1. UPDATE SYSTEM
-          # ============================================
+          set -e
+          
+          echo "========================================="
+          echo "1. SYSTEM UPDATE"
+          echo "========================================="
           apt update && apt upgrade -y
-          apt install -y wget curl git python3-pip
+          apt install -y wget curl git python3-pip build-essential
 
-          # ============================================
-          # 2. NVIDIA GPU DRIVERS
-          # ============================================
-          apt install -y nvidia-driver-535 nvidia-utils-535
-          wget https://developer.download.nvidia.com/compute/cuda/12.3.0/local_installers/cuda_12.3.0_545.23.06_linux.run
-          sh cuda_12.3.0_545.23.06_linux.run --silent --toolkit
-
-          # ============================================
-          # 3. INSTALL BORE.PUB
-          # ============================================
-          cargo install bore-cli || {
+          echo "========================================="
+          echo "2. INSTALL RUST (for bore-cli)"
+          echo "========================================="
+          if ! command -v cargo &> /dev/null; then
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             source ~/.cargo/env
-            cargo install bore-cli
+          fi
+
+          echo "========================================="
+          echo "3. INSTALL BORE.PUB"
+          echo "========================================="
+          cargo install bore-cli || {
+            echo "bore-cli already installed or retrying..."
+            ~/.cargo/bin/cargo install bore-cli
           }
+          export PATH="$HOME/.cargo/bin:$PATH"
 
-          # ============================================
-          # 4. START YOUR APP (example: FastAPI)
-          # ============================================
-          pip install fastapi uvicorn
-          cat > /app.py << 'APP'
-          from fastapi import FastAPI
-          app = FastAPI()
-          @app.get("/")
-          def root():
-              return {"status": "GPU Ready", "gpu": "NVIDIA"}
-          APP
+          echo "========================================="
+          echo "4. INSTALL NVIDIA GPU DRIVERS"
+          echo "========================================="
+          apt install -y nvidia-driver-535 nvidia-utils-535 || echo "Drivers may already exist"
+          nvidia-smi || echo "Reboot may be required for GPU"
 
-          # Run app in background
-          nohup uvicorn app:app --host 0.0.0.0 --port 8000 &
+          echo "========================================="
+          echo "5. CREATE TUNNEL SCRIPT"
+          echo "========================================="
+          cat > /root/tunnel.sh << 'TUNNEL'
+          #!/bin/bash
+          while true; do
+            ~/.cargo/bin/bore local 22 --to bore.pub
+            sleep 5
+          done
+          TUNNEL
+          chmod +x /root/tunnel.sh
 
-          # ============================================
-          # 5. TUNNEL WITH BORE.PUB
-          # ============================================
-          # Tunnel port 8000 to public URL
-          bore local 8000 --to bore.pub &
-
-          # Show public URL
-          sleep 3
-          curl -s https://bore.pub | grep -o 'https://[^"]*' | head -1
+          echo "========================================="
+          echo "6. START SSH TUNNEL"
+          echo "========================================="
+          # Kill existing bore processes
+          pkill bore || true
+          
+          # Start tunnel in background
+          nohup /root/tunnel.sh > /root/tunnel.log 2>&1 &
+          
+          sleep 5
+          echo "========================================="
+          echo "7. GET TUNNEL URL"
+          echo "========================================="
+          cat /root/tunnel.log | grep -o 'bore.pub:[0-9]*' | head -1 || echo "Waiting for tunnel..."
+          
+          # Get the actual public URL
+          echo "Your SSH tunnel:"
+          curl -s https://bore.pub || echo "Check bore.pub website"
+          
+          echo ""
+          echo "========================================="
+          echo "TO CONNECT: ssh -p <PORT> root@bore.pub"
+          echo "Check /root/tunnel.log for the port"
+          echo "========================================="
         EOF
