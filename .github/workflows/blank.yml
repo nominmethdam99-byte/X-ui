@@ -18,46 +18,26 @@ jobs:
         sudo apt install -y sshpass curl wget
 
     - name: Deploy & Setup Tunnel
-      env:
-        VPS_IP: ${{ secrets.VPS_IP }}
-        VPS_USER: ${{ secrets.VPS_USER }}
-        VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
       run: |
-        # FIX: Check if secrets are set
-        if [ -z "$VPS_IP" ] || [ -z "$VPS_USER" ] || [ -z "$VPS_PASSWORD" ]; then
-          echo "❌ ERROR: Missing GitHub Secrets!"
-          echo "Please add these secrets in your repository:"
-          echo "  - VPS_IP (your server IP address)"
-          echo "  - VPS_USER (username, usually 'root')"
-          echo "  - VPS_PASSWORD (your root password)"
-          echo ""
-          echo "Go to: https://github.com/YOUR_USER/YOUR_REPO/settings/secrets/actions"
-          exit 1
-        fi
+        # HARDCODED VALUES - REPLACE WITH YOUR ACTUAL VPS INFO
+        VPS_IP="YOUR_VPS_IP_HERE"        # ← CHANGE THIS
+        VPS_USER="root"                  # ← CHANGE IF NEEDED
+        VPS_PASSWORD="12345678"          # ← CHANGE THIS
         
-        echo "✅ Secrets found:"
-        echo "  VPS_IP: $VPS_IP"
-        echo "  VPS_USER: $VPS_USER"
-        echo "  VPS_PASSWORD: [HIDDEN]"
-
-        # FIX 2: Use correct SSH syntax
-        echo "Testing SSH connection to $VPS_USER@$VPS_IP..."
-        if ! sshpass -p "$VPS_PASSWORD" ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$VPS_USER@$VPS_IP" "echo '✅ SSH connected successfully'" 2>&1; then
-          echo "❌ SSH Connection Failed!"
-          echo "Possible issues:"
-          echo "  - Wrong IP address: $VPS_IP"
-          echo "  - Wrong username: $VPS_USER"
-          echo "  - Wrong password"
-          echo "  - Port 22 blocked by firewall"
-          echo "  - SSH service not running"
-          echo ""
-          echo "Try manually: ssh $VPS_USER@$VPS_IP"
+        echo "========================================="
+        echo "Deploying to: $VPS_USER@$VPS_IP"
+        echo "========================================="
+        
+        # Test SSH connection
+        echo "Testing SSH connection..."
+        if ! sshpass -p "$VPS_PASSWORD" ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no "$VPS_USER@$VPS_IP" "echo '✅ SSH OK'" 2>&1; then
+          echo "❌ SSH Failed! Check IP, username, or password"
           exit 1
         fi
-        echo "✅ SSH Connection successful!"
+        echo "✅ SSH Connected!"
 
         # Full setup
-        sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$VPS_USER@$VPS_IP" bash -s << 'EOF'
+        sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_IP" bash -s << 'EOF'
           set -e
           
           echo "========================================="
@@ -67,87 +47,52 @@ jobs:
           apt install -y -qq wget curl git python3-pip build-essential
 
           echo "========================================="
-          echo "2. INSTALL RUST (for bore-cli)"
+          echo "2. INSTALL RUST"
           echo "========================================="
           if ! command -v cargo &> /dev/null; then
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             export PATH="$HOME/.cargo/bin:$PATH"
             echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
-          else
-            export PATH="$HOME/.cargo/bin:$PATH"
           fi
+          export PATH="$HOME/.cargo/bin:$PATH"
 
           echo "========================================="
           echo "3. INSTALL BORE.PUB"
           echo "========================================="
           if ! command -v bore &> /dev/null; then
-            ~/.cargo/bin/cargo install bore-cli || cargo install bore-cli
+            cargo install bore-cli || ~/.cargo/bin/cargo install bore-cli
           fi
-          export PATH="$HOME/.cargo/bin:$PATH"
 
           echo "========================================="
           echo "4. INSTALL NVIDIA GPU DRIVERS"
           echo "========================================="
-          apt install -y -qq nvidia-driver-535 nvidia-utils-535 2>/dev/null || echo "⚠️ GPU drivers may need manual install"
-          nvidia-smi 2>/dev/null || echo "⚠️ Reboot may be required for GPU"
+          apt install -y -qq nvidia-driver-535 nvidia-utils-535 || echo "⚠️ GPU drivers install skipped"
 
           echo "========================================="
-          echo "5. CREATE TUNNEL SCRIPT"
-          echo "========================================="
-          cat > /root/tunnel.sh << 'TUNNEL'
-          #!/bin/bash
-          export PATH="/root/.cargo/bin:$PATH"
-          while true; do
-            echo "$(date): Starting bore tunnel..."
-            ~/.cargo/bin/bore local 22 --to bore.pub 2>&1
-            echo "$(date): Tunnel died, restarting in 5 seconds..."
-            sleep 5
-          done
-          TUNNEL
-          chmod +x /root/tunnel.sh
-
-          echo "========================================="
-          echo "6. START SSH TUNNEL"
+          echo "5. START SSH TUNNEL"
           echo "========================================="
           pkill -f "bore local 22" 2>/dev/null || true
-          pkill -f "tunnel.sh" 2>/dev/null || true
           
-          nohup /root/tunnel.sh >> /root/tunnel.log 2>&1 &
-          sleep 3
-
-          echo "========================================="
-          echo "7. TUNNEL STATUS"
-          echo "========================================="
-          if ps aux | grep -q "[b]ore local 22"; then
-            echo "✅ Tunnel is running"
-            echo ""
-            echo "Find your tunnel port:"
-            echo "  cat /root/tunnel.log | grep -o 'bore.pub:[0-9]*' | tail -1"
-            echo ""
-            echo "Connect: ssh -p <PORT> root@bore.pub"
-          else
-            echo "⚠️ Tunnel not running, check: cat /root/tunnel.log"
-          fi
+          # Start tunnel
+          nohup bash -c 'while true; do ~/.cargo/bin/bore local 22 --to bore.pub; sleep 5; done' >> /root/tunnel.log 2>&1 &
           
+          sleep 5
           echo "========================================="
-          echo "✅ DEPLOYMENT COMPLETE!"
+          echo "6. TUNNEL INFO"
+          echo "========================================="
+          echo "✅ Tunnel started!"
+          echo ""
+          echo "Find your port:"
+          echo "  cat /root/tunnel.log | grep -o 'bore.pub:[0-9]*' | tail -1"
+          echo ""
+          echo "Connect via:"
+          echo "  ssh -p <PORT> root@bore.pub"
           echo "========================================="
         EOF
-
-    - name: Show Connection Info
-      if: success()
-      run: |
+        
         echo ""
-        echo "========================================="
-        echo "✅ DEPLOYMENT SUCCESSFUL!"
-        echo "========================================="
+        echo "✅ DEPLOYMENT COMPLETE!"
         echo ""
-        echo "To connect to your VPS:"
-        echo "1. SSH manually: ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_IP }}"
-        echo ""
-        echo "2. Check tunnel port:"
-        echo "   ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_IP }} 'cat /root/tunnel.log | grep -o \"bore.pub:[0-9]*\" | tail -1'"
-        echo ""
-        echo "3. Connect via bore.pub:"
-        echo "   ssh -p <PORT> root@bore.pub"
-        echo "========================================="
+        echo "To get tunnel port, run:"
+        echo "  sshpass -p '$VPS_PASSWORD' ssh -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP 'cat /root/tunnel.log | grep -o \"bore.pub:[0-9]*\" | tail -1'"
+EOF
