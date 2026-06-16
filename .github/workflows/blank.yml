@@ -1,4 +1,4 @@
-name: Deploy GPU VPS with RTX 2080 Ti & 64GB RAM
+name: Deploy GPU VPS with RTX 2080 Ti
 
 on:
   push:
@@ -24,120 +24,65 @@ jobs:
         VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
       run: |
         echo "========================================="
-        echo "🚀 DEPLOYING RTX 2080 Ti + 64GB RAM VPS"
+        echo "Deploying RTX 2080 Ti + 64GB RAM VPS"
         echo "========================================="
         
-        # Test SSH
+        # Test SSH connection
         echo "Testing SSH connection..."
-        if ! sshpass -p "$VPS_PASSWORD" ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no "$VPS_USER@$VPS_IP" "echo '✅ SSH OK'" 2>&1; then
-          echo "❌ SSH Failed! Check your secrets."
-          exit 1
-        fi
-        echo "✅ SSH Connected!"
-
-        # Full GPU Setup
-        sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_IP" bash -s << 'ENDSSH'
-set -e
-
-echo "========================================="
-echo "1. SYSTEM UPDATE & DEPENDENCIES"
-echo "========================================="
-apt update -qq && apt upgrade -y -qq
-apt install -y -qq wget curl git python3-pip build-essential \
-  linux-headers-$(uname -r) pciutils screen htop
-
-echo "========================================="
-echo "2. CHECK SYSTEM SPECS"
-echo "========================================="
-echo "📊 RAM:"
-free -h
-echo ""
-echo "💾 CPU:"
-lscpu | grep "Model name"
-echo ""
-echo "🎮 GPU Detection:"
-lspci | grep -i nvidia || echo "No GPU detected yet"
-
-echo "========================================="
-echo "3. INSTALL NVIDIA DRIVERS for RTX 2080 Ti"
-echo "========================================="
-# RTX 2080 Ti uses driver 470+ (recommended: 535)
-apt install -y -qq nvidia-driver-535 nvidia-utils-535
-
-echo "========================================="
-echo "4. INSTALL CUDA TOOLKIT 11.x (compatible with 2080 Ti)"
-echo "========================================="
-wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
-dpkg -i cuda-keyring_1.1-1_all.deb
-apt update -qq
-apt install -y -qq cuda-toolkit-11-8
-
-echo "========================================="
-echo "5. INSTALL cuDNN (optional - for deep learning)"
-echo "========================================="
-# cuDNN requires NVIDIA account, skipping for now
-echo "cuDNN can be installed manually later"
-
-echo "========================================="
-echo "6. SETUP GPU ENVIRONMENT"
-echo "========================================="
-export PATH="/usr/local/cuda/bin:$PATH"
-export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
-echo 'export PATH="/usr/local/cuda/bin:$PATH"' >> ~/.bashrc
-echo 'export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"' >> ~/.bashrc
-
-echo "========================================="
-echo "7. VERIFY GPU"
-echo "========================================="
-nvidia-smi || echo "⚠️ Reboot required for GPU detection"
-
-echo "========================================="
-echo "8. INSTALL PYTHON ML STACK"
-echo "========================================="
-pip3 install --upgrade pip
-pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-pip3 install tensorflow-gpu transformers accelerate
-
-echo "========================================="
-echo "9. INSTALL RUST & BORE.PUB"
-echo "========================================="
-if ! command -v cargo &> /dev/null; then
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-  export PATH="$HOME/.cargo/bin:$PATH"
-fi
-export PATH="$HOME/.cargo/bin:$PATH"
-cargo install bore-cli || ~/.cargo/bin/cargo install bore-cli
-
-echo "========================================="
-echo "10. START SSH TUNNEL with bore.pub"
-echo "========================================="
-pkill -f "bore local 22" 2>/dev/null || true
-nohup bash -c 'while true; do ~/.cargo/bin/bore local 22 --to bore.pub; sleep 5; done' >> /root/tunnel.log 2>&1 &
-
-sleep 5
-
-echo "========================================="
-echo "✅ DEPLOYMENT COMPLETE!"
-echo "========================================="
-echo "📦 VPS Specs:"
-echo "  - RAM: 64GB"
-echo "  - GPU: NVIDIA RTX 2080 Ti"
-echo "  - VRAM: 11GB GDDR6"
-echo "  - CUDA Cores: 4352"
-echo ""
-echo "🔗 SSH Tunnel:"
-echo "  cat /root/tunnel.log | grep -o 'bore.pub:[0-9]*' | tail -1"
-echo ""
-echo "🔑 Connect via tunnel:"
-echo "  ssh -p <PORT> root@bore.pub"
-echo ""
-echo "🐍 Test GPU in Python:"
-echo "  python3 -c 'import torch; print(torch.cuda.is_available())'"
-echo "========================================="
-ENDSSH
+        sshpass -p "$VPS_PASSWORD" ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no "$VPS_USER@$VPS_IP" "echo 'SSH OK'" || exit 1
+        echo "SSH Connected!"
+        
+        # Run setup commands
+        sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_IP" "
+          set -e
+          echo '1. System Update'
+          apt update -qq && apt upgrade -y -qq
+          apt install -y -qq wget curl git python3-pip build-essential pciutils
+          
+          echo '2. Install NVIDIA Drivers for RTX 2080 Ti'
+          apt install -y -qq nvidia-driver-535 nvidia-utils-535
+          
+          echo '3. Install CUDA 11.8'
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          dpkg -i cuda-keyring_1.1-1_all.deb
+          apt update -qq
+          apt install -y -qq cuda-toolkit-11-8
+          
+          echo '4. Setup GPU Environment'
+          export PATH=/usr/local/cuda/bin:\$PATH
+          export LD_LIBRARY_PATH=/usr/local/cuda/lib64:\$LD_LIBRARY_PATH
+          echo 'export PATH=/usr/local/cuda/bin:\$PATH' >> ~/.bashrc
+          echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:\$LD_LIBRARY_PATH' >> ~/.bashrc
+          
+          echo '5. Verify GPU'
+          nvidia-smi || echo 'GPU needs reboot'
+          
+          echo '6. Install Python ML Libraries'
+          pip3 install --upgrade pip
+          pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+          
+          echo '7. Install Rust and bore.pub'
+          if ! command -v cargo &> /dev/null; then
+            curl --proto 'https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            export PATH=\$HOME/.cargo/bin:\$PATH
+          fi
+          export PATH=\$HOME/.cargo/bin:\$PATH
+          cargo install bore-cli || ~/.cargo/bin/cargo install bore-cli
+          
+          echo '8. Start SSH Tunnel with bore.pub'
+          pkill -f 'bore local 22' 2>/dev/null || true
+          nohup bash -c 'while true; do ~/.cargo/bin/bore local 22 --to bore.pub; sleep 5; done' >> /root/tunnel.log 2>&1 &
+          
+          sleep 5
+          echo '9. Tunnel Info'
+          echo 'Check tunnel port: cat /root/tunnel.log | grep -o '\''bore.pub:[0-9]*'\'' | tail -1'
+          
+          echo 'Deployment Complete!'
+          echo 'Connect: ssh -p <PORT> root@bore.pub'
+        "
         
         echo ""
-        echo "✅ DEPLOYMENT SUCCESSFUL!"
+        echo "Deployment Successful!"
         echo ""
-        echo "📝 To check tunnel port:"
-        echo "  sshpass -p '${{ secrets.VPS_PASSWORD }}' ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_IP }} 'cat /root/tunnel.log | grep -o \"bore.pub:[0-9]*\" | tail -1'"
+        echo "To get tunnel port, run:"
+        echo "sshpass -p '$VPS_PASSWORD' ssh $VPS_USER@$VPS_IP 'cat /root/tunnel.log | grep -o \"bore.pub:[0-9]*\" | tail -1'"
