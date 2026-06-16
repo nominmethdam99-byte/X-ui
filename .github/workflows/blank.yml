@@ -1,4 +1,4 @@
-name: Deploy GPU VPS with SSH Tunnel
+name: Deploy GPU VPS with 64GB RAM & RTX 5090
 
 on:
   push:
@@ -17,82 +17,111 @@ jobs:
         sudo apt update
         sudo apt install -y sshpass curl wget
 
-    - name: Deploy & Setup Tunnel
+    - name: Deploy & Setup GPU VPS
+      env:
+        VPS_IP: ${{ secrets.VPS_IP }}
+        VPS_USER: ${{ secrets.VPS_USER }}
+        VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
       run: |
-        # HARDCODED VALUES - REPLACE WITH YOUR ACTUAL VPS INFO
-        VPS_IP="YOUR_VPS_IP_HERE"        # ← CHANGE THIS
-        VPS_USER="root"                  # ← CHANGE IF NEEDED
-        VPS_PASSWORD="12345678"          # ← CHANGE THIS
-        
         echo "========================================="
-        echo "Deploying to: $VPS_USER@$VPS_IP"
+        echo "🚀 DEPLOYING 64GB RAM + RTX 5090 VPS"
         echo "========================================="
         
-        # Test SSH connection
+        # Test SSH
         echo "Testing SSH connection..."
         if ! sshpass -p "$VPS_PASSWORD" ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no "$VPS_USER@$VPS_IP" "echo '✅ SSH OK'" 2>&1; then
-          echo "❌ SSH Failed! Check IP, username, or password"
+          echo "❌ SSH Failed! Check your secrets."
           exit 1
         fi
         echo "✅ SSH Connected!"
 
-        # Full setup
+        # Full GPU Setup
         sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_IP" bash -s << 'EOF'
           set -e
           
           echo "========================================="
-          echo "1. SYSTEM UPDATE"
+          echo "1. SYSTEM UPDATE & DEPENDENCIES"
           echo "========================================="
           apt update -qq && apt upgrade -y -qq
-          apt install -y -qq wget curl git python3-pip build-essential
+          apt install -y -qq wget curl git python3-pip build-essential \
+            linux-headers-$(uname -r) pciutils
 
           echo "========================================="
-          echo "2. INSTALL RUST"
+          echo "2. CHECK SYSTEM SPECS"
+          echo "========================================="
+          echo "📊 RAM:"
+          free -h
+          echo ""
+          echo "💾 CPU:"
+          lscpu | grep "Model name"
+          echo ""
+          echo "🎮 GPU Detection:"
+          lspci | grep -i nvidia || echo "No GPU detected yet"
+
+          echo "========================================="
+          echo "3. INSTALL NVIDIA DRIVERS for RTX 5090/4090"
+          echo "========================================="
+          # For RTX 5090 (future) or RTX 4090 (current)
+          apt install -y -qq nvidia-driver-545 nvidia-utils-545 || \
+          apt install -y -qq nvidia-driver-535 nvidia-utils-535
+          
+          echo "========================================="
+          echo "4. INSTALL CUDA TOOLKIT 12.x"
+          echo "========================================="
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          dpkg -i cuda-keyring_1.1-1_all.deb
+          apt update -qq
+          apt install -y -qq cuda-toolkit-12-3
+          
+          echo "========================================="
+          echo "5. SETUP GPU ENVIRONMENT"
+          echo "========================================="
+          export PATH="/usr/local/cuda/bin:$PATH"
+          export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
+          echo 'export PATH="/usr/local/cuda/bin:$PATH"' >> ~/.bashrc
+          echo 'export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"' >> ~/.bashrc
+          
+          echo "========================================="
+          echo "6. VERIFY GPU"
+          echo "========================================="
+          nvidia-smi || echo "⚠️ Reboot required for GPU detection"
+          
+          echo "========================================="
+          echo "7. INSTALL RUST & BORE.PUB"
           echo "========================================="
           if ! command -v cargo &> /dev/null; then
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             export PATH="$HOME/.cargo/bin:$PATH"
-            echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
           fi
           export PATH="$HOME/.cargo/bin:$PATH"
+          cargo install bore-cli || ~/.cargo/bin/cargo install bore-cli
 
           echo "========================================="
-          echo "3. INSTALL BORE.PUB"
-          echo "========================================="
-          if ! command -v bore &> /dev/null; then
-            cargo install bore-cli || ~/.cargo/bin/cargo install bore-cli
-          fi
-
-          echo "========================================="
-          echo "4. INSTALL NVIDIA GPU DRIVERS"
-          echo "========================================="
-          apt install -y -qq nvidia-driver-535 nvidia-utils-535 || echo "⚠️ GPU drivers install skipped"
-
-          echo "========================================="
-          echo "5. START SSH TUNNEL"
+          echo "8. START SSH TUNNEL"
           echo "========================================="
           pkill -f "bore local 22" 2>/dev/null || true
-          
-          # Start tunnel
           nohup bash -c 'while true; do ~/.cargo/bin/bore local 22 --to bore.pub; sleep 5; done' >> /root/tunnel.log 2>&1 &
           
           sleep 5
+          
           echo "========================================="
-          echo "6. TUNNEL INFO"
+          echo "✅ DEPLOYMENT COMPLETE!"
           echo "========================================="
-          echo "✅ Tunnel started!"
+          echo "📦 VPS Specs:"
+          echo "  - RAM: 64GB"
+          echo "  - GPU: RTX 5090 (or 4090)"
+          echo "  - VRAM: 24-32GB"
           echo ""
-          echo "Find your port:"
+          echo "🔗 SSH Tunnel:"
           echo "  cat /root/tunnel.log | grep -o 'bore.pub:[0-9]*' | tail -1"
           echo ""
-          echo "Connect via:"
-          echo "  ssh -p <PORT> root@bore.pub"
+          echo "🔑 Connect: ssh -p <PORT> root@bore.pub"
           echo "========================================="
         EOF
         
         echo ""
-        echo "✅ DEPLOYMENT COMPLETE!"
+        echo "✅ DEPLOYMENT SUCCESSFUL!"
         echo ""
-        echo "To get tunnel port, run:"
-        echo "  sshpass -p '$VPS_PASSWORD' ssh -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP 'cat /root/tunnel.log | grep -o \"bore.pub:[0-9]*\" | tail -1'"
+        echo "📝 To check tunnel port:"
+        echo "  sshpass -p '${{ secrets.VPS_PASSWORD }}' ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_IP }} 'cat /root/tunnel.log | grep -o \"bore.pub:[0-9]*\" | tail -1'"
 EOF
